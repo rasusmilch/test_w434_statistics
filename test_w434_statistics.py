@@ -397,13 +397,39 @@ def remove_outliers(timestamps, ii_values):
 
     q1, q3 = np.percentile(ii_values, [25, 75])
     iqr = q3 - q1
-    lower_bound = q1 - 1.5 * iqr
-    upper_bound = q3 + 1.5 * iqr
+    lower_bound = q1 - 2.5 * iqr
+    upper_bound = q3 + 2.5 * iqr
 
     mask = (ii_values >= lower_bound) & (ii_values <= upper_bound)
     return timestamps[mask], ii_values[mask]
     
-    
+def calculate_y_limits(ii_values):
+        """
+        Calculate suitable Y-axis limits using IQR to exclude extreme outliers.
+
+        Args:
+            ii_values (list): List of all Ii values.
+
+        Returns:
+            tuple: (y_min, y_max) suitable for plotting.
+        """
+
+        # Remove NaN values
+        ii_values = np.array(ii_values, dtype=float)
+        ii_values = ii_values[~np.isnan(ii_values)]
+
+        if len(ii_values) == 0:
+            return None, None  # Return None if all values are NaN
+
+        q1, q3 = np.percentile(ii_values, [25, 75])
+        iqr = q3 - q1
+        # print(f"Incoming ii_values: {ii_values}")
+        # print(f"q1: {q1}, q3: {q3}, iqr: {iqr}")
+
+        lower_bound = max(0, q1 - 1.5 * iqr)  # Lower bound should not be negative
+        upper_bound = q3 + 1.5 * iqr
+        return lower_bound, upper_bound
+
 def plot_largest_ii_pins(extracted_data, stats_db, x, output_file):
     """
     Plot the X largest dielectric breakdown pins based on mean imaginary leakage (Ii) over time.
@@ -415,7 +441,8 @@ def plot_largest_ii_pins(extracted_data, stats_db, x, output_file):
         output_file (str): Base name for the output plot files (e.g., 'output').
     """
 
-    # print(stats_db)
+    y_margin=0.1
+    
     # Filter and sort the data by mean Ii (index 9 in stats_db)
     ii_data = [
         {
@@ -444,6 +471,32 @@ def plot_largest_ii_pins(extracted_data, stats_db, x, output_file):
         sorted_data = sorted(zip(pin_grouped_data[key]["timestamps"], pin_grouped_data[key]["ii_values"]))
         pin_grouped_data[key]["timestamps"], pin_grouped_data[key]["ii_values"] = zip(*sorted_data)
 
+    # Determine per-plot and global Y-axis limits
+    local_y_limits = []
+    for data in pin_grouped_data.values():
+        ii_values = np.array(data["ii_values"], dtype=float)
+        local_y_min, local_y_max = calculate_y_limits(ii_values)
+        # print(f"Local min: {local_y_min}, max: {local_y_max}")
+
+        if local_y_min is not None and local_y_max is not None:
+            local_y_limits.append((local_y_min, local_y_max))
+
+    if not local_y_limits:
+        print("No valid data for plotting. Exiting.")
+        return  # Exit if there are no valid data points
+
+    global_y_min = min(limit[0] for limit in local_y_limits)
+    global_y_max = max(limit[1] for limit in local_y_limits)
+
+    # Add margin to global limits
+    global_y_min -= y_margin * (global_y_max - global_y_min)
+    global_y_max += y_margin * (global_y_max - global_y_min)
+
+    # print(f"Global min: {global_y_min}, max: {global_y_max}")
+
+    if not np.isfinite(global_y_min) or not np.isfinite(global_y_max):
+        print("Global Y-axis limits are invalid. Exiting.")
+        return  # Exit if the limits are not finite
 
     # Plotting
     plt.figure(figsize=(12, 8), constrained_layout=True)
@@ -478,6 +531,7 @@ def plot_largest_ii_pins(extracted_data, stats_db, x, output_file):
             )
 
     plt.title(f"Top {x} Pins by Mean Imaginary Leakage (Linear Scale)")
+    plt.ylim(global_y_min, global_y_max)
     plt.xlabel("Timestamp")
     plt.ylabel("Imaginary Leakage Ii (uA)")
     plt.legend()
@@ -517,6 +571,7 @@ def plot_largest_ii_pins(extracted_data, stats_db, x, output_file):
             )
 
     plt.yscale("log")
+    plt.ylim(global_y_min, global_y_max)
     plt.title(f"Top {x} Pins by Mean Imaginary Leakage (Log Scale)")
     plt.xlabel("Timestamp")
     plt.ylabel("Imaginary Leakage Ii (uA)")
@@ -608,7 +663,8 @@ def main():
     parser.add_argument("-o", "--output", required=True, help="Output file name base (no extension)")
     parser.add_argument("-e", "--extension", required=True, help="File extension to filter (e.g., .txt)")
     parser.add_argument("-p", "--decimal_places", type=int, default=2, help="Number of decimal places for float values")
-
+    parser.add_argument("-n", "--num", type=int, default=3, help="Number of highest mean imaginary leakage pins to plot")
+    
     args = parser.parse_args()
 
     directory_path = args.directory
@@ -659,7 +715,7 @@ def main():
 
     
     # Plot the top 5 dielectric breakdown pins by mean Ii
-    plot_largest_ii_pins(extracted_data, stats_db, x=5, output_file=output_filename_db)
+    plot_largest_ii_pins(extracted_data, stats_db, args.num, output_file=output_filename_db)
 
 if __name__ == "__main__":
     main()

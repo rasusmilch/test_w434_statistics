@@ -653,6 +653,190 @@ def print_table(headers, rows, directory_path, unit_substring, output_filename=N
             csvwriter.writerow(headers)
             csvwriter.writerows(formatted_rows)
 
+def plot_largest_cont_pins(extracted_data, stats_cont, x, output_file):
+    """
+    Plot the X largest dielectric breakdown pins based on mean imaginary leakage (Ii) over time.
+
+    Args:
+        extracted_data (list): List of tuples containing timestamp, continuity, and dielectric data.
+        stats_db (list): Processed dielectric breakdown data containing statistics (list of lists).
+        x (int): Number of largest pins to plot based on mean Ii.
+        output_file (str): Base name for the output plot files (e.g., 'output').
+    """
+
+    y_margin=0.1
+    
+    # Filter and sort the data by mean Ii (index 9 in stats_db)
+    cont_data  = [
+        {
+            "from_pin": entry[0],
+            "to_pin": entry[1],
+            "mean_cont": entry[4],  # Mean continuity
+            "pin_key": (entry[0], entry[1]),  # Key to find data in extracted_data
+        }
+        for entry in stats_cont if entry[4] is not None
+    ]
+
+    # Sort by mean in descending order and select the top X entries
+    cont_data_sorted  = sorted(cont_data, key=lambda d: d["mean_cont"], reverse=True)[:x]
+
+    # Group data for plotting
+    pin_grouped_data = defaultdict(lambda: {"timestamps": [], "cont": []})
+    for pin_entry in cont_data_sorted:
+        for timestamp, continuity, dielectric in extracted_data:
+            for c in continuity:
+                if (c["from_pin"], c["to_pin"]) == pin_entry["pin_key"]:
+                    pin_grouped_data[pin_entry["pin_key"]]["timestamps"].append(timestamp)
+                    pin_grouped_data[pin_entry["pin_key"]]["cont"].append(c["resistance"])
+
+    # Sort timestamps within each pin group
+    for key in pin_grouped_data:
+        sorted_data = sorted(zip(pin_grouped_data[key]["timestamps"], pin_grouped_data[key]["cont"]))
+        pin_grouped_data[key]["timestamps"], pin_grouped_data[key]["cont"] = zip(*sorted_data)
+
+    # Determine per-plot and global Y-axis limits
+    local_y_limits = []
+    for data in pin_grouped_data.values():
+        cont_values = np.array(data["cont"], dtype=float)
+        local_y_min, local_y_max = calculate_y_limits(cont_values)
+        # print(f"Local min: {local_y_min}, max: {local_y_max}")
+
+        if local_y_min is not None and local_y_max is not None:
+            local_y_limits.append((local_y_min, local_y_max))
+
+    if not local_y_limits:
+        print("No valid data for plotting. Exiting.")
+        return  # Exit if there are no valid data points
+
+    global_y_min = min(limit[0] for limit in local_y_limits)
+    global_y_max = max(limit[1] for limit in local_y_limits)
+
+    # Add margin to global limits
+    global_y_min -= y_margin * (global_y_max - global_y_min)
+    global_y_max += y_margin * (global_y_max - global_y_min)
+
+    # print(f"Global min: {global_y_min}, max: {global_y_max}")
+
+    if not np.isfinite(global_y_min) or not np.isfinite(global_y_max):
+        print("Global Y-axis limits are invalid. Exiting.")
+        return  # Exit if the limits are not finite
+
+    # Plotting
+    plt.figure(figsize=(12, 8), constrained_layout=True)
+
+    # Linear plot
+    for pin_key, data in pin_grouped_data.items():
+        label = f"{pin_key[0]} -> {pin_key[1]} ({len(data['timestamps'])} points)"
+        timestamps = np.array([(ts - data["timestamps"][0]).total_seconds() for ts in data["timestamps"]], dtype=float)
+        cont_values = np.array(data["cont"], dtype=float)
+
+        line, = plt.plot(
+            data["timestamps"],
+            data["cont"],
+            label=label,
+            marker='o',  # Add markers for each data point
+        )
+
+        # Remove outliers
+        clean_timestamps, clean_cont_values = remove_outliers(timestamps, cont_values)
+
+        # Fit a quadratic regression (degree 2 polynomial) on clean data
+        if len(clean_timestamps) > 2:  # Ensure there are enough points for regression
+            poly_coeffs = np.polyfit(clean_timestamps, clean_cont_values, 2)  # Fit quadratic
+            trend_line = np.polyval(poly_coeffs, clean_timestamps)
+            plt.plot(
+                [data["timestamps"][i] for i in range(len(timestamps)) if timestamps[i] in clean_timestamps],
+                trend_line,
+                linestyle='--',
+                color=line.get_color(),  # Match the color of the dataset
+                alpha=0.8,
+                # label=f"{label} Quadratic Trend",
+            )
+
+    plt.title(f"Top {x} Pins by Mean Continuity (Linear Scale)")
+    plt.ylim(global_y_min, global_y_max)
+    plt.xlabel("Timestamp")
+    plt.ylabel("Continuity (uOhms)")
+    plt.legend()
+    plt.grid(True)
+    plt.xticks(rotation=45)
+    # plt.tight_layout()
+    plt.savefig(f"{output_file}_linear.png")
+    plt.close()
+
+    # Log plot
+    plt.figure(figsize=(12, 8))
+    for pin_key, data in pin_grouped_data.items():
+        label = f"{pin_key[0]} -> {pin_key[1]} ({len(data['timestamps'])} points)"
+        timestamps = np.array([(ts - data["timestamps"][0]).total_seconds() for ts in data["timestamps"]], dtype=float)
+        cont_values = np.array(data["cont"], dtype=float)
+        line, = plt.plot(
+            data["timestamps"],
+            data["cont"],
+            label=label,
+            marker='o',  # Add markers for each data point
+        )
+        
+        # Remove outliers
+        clean_timestamps, clean_cont_values = remove_outliers(timestamps, cont_values)
+
+        # Fit a quadratic regression (degree 2 polynomial) on clean data
+        if len(clean_timestamps) > 2:  # Ensure there are enough points for regression
+            poly_coeffs = np.polyfit(clean_timestamps, clean_cont_values, 2)  # Fit quadratic
+            trend_line = np.polyval(poly_coeffs, clean_timestamps)
+            plt.plot(
+                [data["timestamps"][i] for i in range(len(timestamps)) if timestamps[i] in clean_timestamps],
+                trend_line,
+                linestyle='--',
+                color=line.get_color(),  # Match the color of the dataset
+                alpha=0.8,
+                # label=f"{label} Quadratic Trend",
+            )
+
+    plt.yscale("log")
+    plt.ylim(global_y_min, global_y_max)
+    plt.title(f"Top {x} Pins by Continuity (Log Scale)")
+    plt.xlabel("Timestamp")
+    plt.ylabel("Continuity (uOhms)")
+    plt.legend()
+    plt.grid(True, which="both", linestyle="--", linewidth=0.5)
+    plt.xticks(rotation=45)
+    # plt.tight_layout()
+    plt.savefig(f"{output_file}_log.png")
+    plt.close()
+
+def plot_daily_continuity_boxplot(extracted_data, output_file):
+    """
+    Create a box‐and‐whisker plot of all raw continuity values, grouped by day.
+    Saves the plot to `{output_file}_daily_boxplot.png`.
+    """
+    # group resistances by date
+    daily_vals = defaultdict(list)
+    for timestamp, continuity, _ in extracted_data:
+        day = timestamp.date()
+        for c in continuity:
+            if c["resistance"] is not None:
+                daily_vals[day].append(c["resistance"])
+
+    # sort the days and collect data
+    days = sorted(daily_vals)
+    data = [daily_vals[day] for day in days]
+
+    # nothing to plot?
+    if not data or all(len(d)==0 for d in data):
+        print("No continuity data to plot by day.")
+        return
+
+    # build the boxplot
+    plt.figure(figsize=(12, 8), constrained_layout=True)
+    plt.boxplot(data, tick_labels=[d.strftime("%Y-%m-%d") for d in days], showfliers=True)
+    plt.title("Daily Continuity Distribution (mΩ)")
+    plt.xlabel("Date")
+    plt.ylabel("Continuity (mΩ)")
+    plt.xticks(rotation=45)
+    plt.grid(True, which="both", linestyle="--", linewidth=0.5)
+    plt.savefig(f"{output_file}_daily_boxplot.png")
+    plt.close()
 
 def main():
     parser = argparse.ArgumentParser(
@@ -716,6 +900,12 @@ def main():
     
     # Plot the top 5 dielectric breakdown pins by mean Ii
     plot_largest_ii_pins(extracted_data, stats_db, args.num, output_file=output_filename_db)
+
+    plot_largest_cont_pins(extracted_data, stats_cont, args.num, output_file=output_filename_cont)
+    print(f"Continuity plots saved as {output_filename_cont}_linear.png and {output_filename_cont}_log.png")
+
+    plot_daily_continuity_boxplot(extracted_data, output_filename_cont)
+    print(f"Daily continuity box‐and‐whisker plot saved as {output_filename_cont}_daily_boxplot.png")
 
 if __name__ == "__main__":
     main()

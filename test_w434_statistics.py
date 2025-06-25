@@ -172,7 +172,7 @@ def extract_resistance(line):
     if should_exclude(parts):
         return None
     
-    if "OPEN" in parts[0].strip().upper():
+    if "NCL" in parts[0].strip().upper():
         return None
     
     if len(parts) == 4:
